@@ -1,0 +1,224 @@
+openapi: 3.0.3
+info:
+  title: Document Processing Pipeline API
+  version: 1.0.0
+  description: API конвейера обработки документов. OCR, перевод и LLM-интеграции не входят в текущий объём.
+servers:
+  - url: http://localhost:8080
+paths:
+  /jobs:
+    post:
+      summary: Создать Job обработки документа
+      operationId: createJob
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '201':
+          description: Job создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '200':
+          description: Повтор того же запроса; возвращён ранее созданный Job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+    get:
+      summary: Получить список Job текущего клиента
+      operationId: listJobs
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Список Job
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Job' }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /jobs/{jobId}:
+    get:
+      summary: Получить состояние и результат Job
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Отмена Job (не поддерживается в версии 1.0)
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '409':
+          description: Отмена не поддерживается
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /tools:
+    get:
+      summary: Получить список доступных Tools
+      operationId: listTools
+      responses:
+        '200':
+          description: Доступные инструменты
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, description]
+                      properties:
+                        name: { type: string }
+                        description: { type: string }
+  /tools/{toolName}:
+    get:
+      summary: Получить описание Tool и его параметров
+      operationId: getTool
+      parameters:
+        - in: path
+          name: toolName
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tool найден
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  description: { type: string }
+                  inputSchema: { type: object }
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    JobId:
+      in: path
+      name: jobId
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [fileId, operations]
+      properties:
+        fileId:
+          type: string
+          description: Идентификатор предварительно загруженного файла
+        operations:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [extract_text, calculate_statistics, convert_format]
+        outputFormat:
+          type: string
+          enum: [txt, pdf, docx, html]
+    Job:
+      type: object
+      required: [id, status, fileId, operations, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [created, running, succeeded, failed, rejected]
+        fileId: { type: string }
+        operations:
+          type: array
+          items: { type: string }
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        field:
+          type: string
+          nullable: true
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    BadRequest:
+      description: Некорректный запрос или поле
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Конфликт состояния или ключа идемпотентности
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: Размер файла превышает лимит 50 MiB
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedMediaType:
+      description: Формат файла не поддерживается
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Ресурс не найден или недоступен текущему клиенту
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
