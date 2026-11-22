@@ -3,6 +3,54 @@
 
 Сервис предназначен для автоматизированной обработки документов различных форматов. Пользователь загружает документ и выбирает необходимые операции: извлечение текста, анализ статистики или преобразование в другой формат.
 
+Ядро: Job с проверкой переходов, Registry, Dispatcher и три Tool за контрактом из практики 2.
+Без HTTP и без БД (они появятся на практике 4); хранение — через интерфейсы, пока в памяти.
+Зависимостей нет: только стандартная библиотека, Python 3.10+.
+
+## Запуск тестов — одна команда
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+## Состав
+
+| Файл | Что делает |
+|---|---|
+| `core/job.py` | Job, `JobState`, таблица `ALLOWED_TRANSITIONS`; единственная точка смены состояния — `transition_to` (под замком) |
+| `core/registry.py` | имя операции → Tool; неизвестная → `UNKNOWN_OPERATION` |
+| `core/dispatcher.py` | `submit` (проверка параметров, идемпотентность), `run`, `execute`, `cancel`, `recover_interrupted` |
+| `core/tool.py` | контракт: `Tool.execute(input, ToolContext) -> ToolResult` |
+| `core/tools/` | `extract_text`, `calculate_statistics`, `convert_format` |
+| `core/errors.py` | единый набор ошибок (коды из практики 2) |
+| `core/storage.py` | интерфейсы `FileStorage`, `JobRepository` и реализации в памяти |
+| `core/schema.py` | проверка структуры параметров по `input_schema` |
+
+## Как это работает
+
+- **Переходы.** Разрешено только `created→running`, `created→rejected`, `running→succeeded`, `running→failed`.
+  Всё остальное — `InvalidStateTransition` (`INVALID_STATE_TRANSITION`, соответствует HTTP 409); состояние не меняется.
+  `job.state` только для чтения.
+- **Неверные параметры.** Структура/типы/обязательные поля проверяются в `Dispatcher.submit` по `input_schema` →
+  Job `rejected`, `job.error = {code: INVALID_INPUT, field: ...}`. Бизнес-проверки (файл есть, формат, размер,
+  значение `language`) — внутри Tool → Job `failed`, тоже `INVALID_INPUT` с полем.
+- **Неизвестная операция.** `UnknownOperation` из Registry; Job не создаётся.
+- **Падение Tool.** Типизированная ошибка → `failed` с её кодом; любое другое исключение →
+  `failed`, `TOOL_INTERNAL_ERROR`, детали только в лог.
+- **Новый Tool.** `registry.register(MyTool())` — Dispatcher не меняется (есть тест).
+- **Идемпотентность.** Один ключ → один Job; повтор с тем же запросом возвращает тот же Job без повторного
+  выполнения, с другим запросом — `IDEMPOTENCY_KEY_REUSED`.
+- **Перезапуск.** `Dispatcher.recover_interrupted()` переводит все `running` в `failed (SERVICE_RESTARTED)`.
+  Вызывать один раз при старте сервиса, до приёма запросов.
+
+## Ограничения этой версии
+
+- `extract_text` читает `txt` и `md`; DOCX/PDF → `UNSUPPORTED_FORMAT` (нужны библиотеки).
+- `convert_format` реализует `txt→txt`, `txt→html`, `md→txt`; остальные пары → `UNSUPPORTED_FORMAT`.
+- Один Job = одна операция (один Tool).
+- Дедлайн Tool соблюдают сами (`context.check_deadline()`); принудительно Dispatcher Tool не обрывает.
+
+
 ## Назначение проекта
 
 Основная задача сервиса — упростить работу с документами и объединить несколько операций по их обработке в одной системе.
